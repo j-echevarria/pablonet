@@ -14,32 +14,23 @@ from streamdiffusion.acceleration.tensorrt import accelerate_with_tensorrt
 
 
 def load_model(
-    base_model_path,
-    acceleration,
-    lora_path=None,
-    lora_scale=1.0,
-    t_index_list=None,
-    engines_dir="engines",
-):
+    base_model_path: str,
+    acceleration: str,
+    lora_path: str | None = None,
+    lora_scale: float = 1.0,
+    t_index_list: list[int] | None = None,
+    engine_dir: str = "engines"
+) -> StreamDiffusion:
     t_start = time.time()
-    pipe = StableDiffusionPipeline.from_pretrained(base_model_path).to(
-        device=torch.device("cuda"),
-        dtype=torch.float16,
-    )
+    pipe = StableDiffusionPipeline.from_pretrained(base_model_path).to(device=torch.device("cuda"), dtype=torch.float16)
     print(f"Pipeline load time: {time.time() - t_start:.4f}s")
 
     t_start = time.time()
-    stream = StreamDiffusion(
-        pipe,
-        t_index_list=t_index_list,
-        torch_dtype=torch.float16,
-        width=512,
-        height=512,
-    )
+    stream = StreamDiffusion(pipe=pipe, t_index_list=t_index_list, torch_dtype=torch.float16, width=512, height=512)
     print(f"Stream initialization time: {time.time() - t_start:.4f}s")
 
     t_start = time.time()
-    stream.enable_similar_image_filter(0.99, 5)
+    stream.enable_similar_image_filter(threshold=0.99, max_skip_frame=5)
     stream.load_lcm_lora()
     stream.fuse_lora()
     print(f"LCM LoRA setup time: {time.time() - t_start:.4f}s")
@@ -52,18 +43,12 @@ def load_model(
         print(f"Using LoRA: {lora_path}")
 
     t_start = time.time()
-    stream.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(
-        device=pipe.device, dtype=pipe.dtype
-    )
+    stream.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(device=pipe.device, dtype=pipe.dtype)
     print(f"VAE load time: {time.time() - t_start:.4f}s")
 
     t_start = time.time()
     if acceleration == "tensorrt":
-        stream = accelerate_with_tensorrt(
-            stream,
-            engines_dir,
-            max_batch_size=2,
-        )
+        stream = accelerate_with_tensorrt(stream=stream, engine_dir=engine_dir, max_batch_size=2)
     else:
         pipe.enable_xformers_memory_efficient_attention()
     print(f"Acceleration setup time: {time.time() - t_start:.4f}s")
@@ -77,10 +62,10 @@ async def process_image(
     prompt,
     num_inference_steps=50,
     preprocessing=None,
-    negative_prompt="",
+    negative_prompt: str = "",
     guidance_scale=1.2,
     jpeg_quality=90,
-):
+) -> None:
     # Prepare the stream
     t_start = time.time()
     stream.prepare(
@@ -212,41 +197,39 @@ async def process_image(
 
 
 def run_server(
-    base_model_path,
-    acceleration,
-    prompt,
-    host="0.0.0.0",
-    port=5678,
-    num_inference_steps=50,
+    base_model_path: str,
+    acceleration: str,
+    prompt: str,
+    host: str = "0.0.0.0",
+    port: int = 5678,
+    num_inference_steps: int = 50,
     preprocessing=None,
-    negative_prompt="",
+    negative_prompt: str = "",
     guidance_scale=1.2,
-    lora_path=None,
-    lora_scale=1.0,
-    t_index_list=None,
+    lora_path: str | None = None,
+    lora_scale: float = 1.0,
+    t_index_list: list[int] | None = None,
     jpeg_quality=90,
-    engines_dir="engines",
-):
+    engine_dir: str = "engines",
+) -> None:
     print("Loading model...")
     t_start = time.time()
-    stream = load_model(
-        base_model_path, acceleration, lora_path, lora_scale, t_index_list, engines_dir
-    )
+    stream = load_model(base_model_path, acceleration, lora_path, lora_scale, t_index_list, engine_dir)
     print(f"Total model load time: {time.time() - t_start:.4f}s")
 
     start_server = websockets.serve(
         lambda ws: process_image(
-            ws,
-            stream,
-            prompt,
-            num_inference_steps,
-            preprocessing,
+            websocket=ws,
+            stream=stream,
+            prompt=prompt,
+            num_inference_steps=num_inference_steps,
+            preprocessing=preprocessing,
             negative_prompt=negative_prompt,
             guidance_scale=guidance_scale,
-            jpeg_quality=jpeg_quality,
+            jpeg_quality=jpeg_quality
         ),
-        host,
-        port,
+        host=host,
+        port=port
     )
 
     asyncio.get_event_loop().run_until_complete(start_server)

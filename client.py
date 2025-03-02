@@ -4,41 +4,51 @@ import cv2
 import numpy as np
 import json
 import time
+import argparse
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 
 async def capture_and_send(
-    url,
-    prompt,
-    negative_prompt,
-    image_size=256,
-    rotate=0,
-    fullscreen=False,
-    jpeg_quality=90,
-    target_fps=30,
-):
-    uri = url
-    async with websockets.connect(uri) as websocket:
+    url: str,
+    prompt: str,
+    negative_prompt: str,
+    image_size: int = 256,
+    rotate: float = 0,
+    fullscreen: bool = False,
+    jpeg_quality: int = 90,
+    target_fps: int = 30
+) -> None:
+    """
+    Captures frames from the webcam, processes them, and sends them to a WebSocket server.
+
+    Args:
+        url (str): WebSocket server URL.
+        prompt (str): Positive prompt for the server.
+        negative_prompt (str): Negative prompt for the server.
+        image_size (int): Target image size (square).
+        rotate (float): Rotation angle for received frames.
+        fullscreen (bool): Display window in fullscreen mode.
+        jpeg_quality (int): JPEG compression quality (1-100).
+        target_fps (int): Target frames per second.
+
+    Returns:
+        None
+    """
+    async with websockets.connect(uri=url) as websocket:
         t_start = time.time()
         cap = cv2.VideoCapture(1)
         print(f"Camera init time: {time.time() - t_start:.4f}")
 
         cv2.namedWindow("image", cv2.WINDOW_NORMAL)
         if fullscreen:
-            cv2.setWindowProperty(
-                "image", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
-            )
+            cv2.setWindowProperty("image", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
         print("Connected to server...")
 
         # Send prompt configuration as JSON
-        await websocket.send(
-            json.dumps(
-                {
-                    "prompt": prompt,
-                    "negative_prompt": negative_prompt,
-                }
-            )
-        )
+        await websocket.send(json.dumps({"prompt": prompt, "negative_prompt": negative_prompt}))
 
         frame_count = 0
         last_send_time = 0
@@ -71,23 +81,23 @@ async def capture_and_send(
             # Crop frame
             t_start = time.time()
             h, w, _ = frame.shape
-            min_side = min(h, w)
+            half_min_side = min(h, w) // 2
             frame = frame[
-                h // 2 - min_side // 2 : h // 2 + min_side // 2,
-                w // 2 - min_side // 2 : w // 2 + min_side // 2,
+                h // 2 - half_min_side : h // 2 + half_min_side,
+                w // 2 - half_min_side : w // 2 + half_min_side
             ]
             crop_time = time.time() - t_start
 
             # Resize and convert
             t_start = time.time()
-            frame = cv2.resize(frame, (image_size, image_size))
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.resize(frame, dsize=(image_size, image_size))
+            frame = cv2.cvtColor(frame, code=cv2.COLOR_BGR2RGB)
             resize_convert_time = time.time() - t_start
 
             # Encode frame
             t_start = time.time()
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
-            result, encimg = cv2.imencode(".jpg", frame, encode_param)
+            encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
+            result, encimg = cv2.imencode(ext=".jpg", img=frame, params=encode_params)
             encode_time = time.time() - t_start
 
             if not result:
@@ -104,9 +114,7 @@ async def capture_and_send(
             # Network receive with timeout
             t_start = time.time()
             try:
-                response = await asyncio.wait_for(
-                    websocket.recv(), timeout=1 / target_fps
-                )
+                response = await asyncio.wait_for(websocket.recv(), timeout=1 / target_fps)
                 receive_time = time.time() - t_start
 
                 # Process and display
@@ -118,10 +126,8 @@ async def capture_and_send(
                         print("Failed to decode received image")
                         continue
 
-                    frame_decoded = cv2.flip(frame_decoded, 1)
-                    frame_decoded = cv2.resize(
-                        frame_decoded, (1400, 1400), interpolation=cv2.INTER_CUBIC
-                    )
+                    frame_decoded = cv2.flip(frame_decoded, flipCode=1)
+                    frame_decoded = cv2.resize(frame_decoded, dsize=(1400, 1400), interpolation=cv2.INTER_CUBIC)
 
                     if rotate != 0:
                         (h_dec, w_dec) = frame_decoded.shape[:2]
@@ -140,7 +146,7 @@ async def capture_and_send(
                 print("Server response timeout - skipping frame")
                 # Display last frame if available
                 if last_displayed_frame is not None:
-                    cv2.imshow("image", last_displayed_frame)
+                    cv2.imshow(winname="image", mat=last_displayed_frame)
                 continue
 
             total_loop_time = time.time() - loop_start
@@ -178,45 +184,27 @@ async def capture_and_send(
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--url", type=str, help="URL of server", default="ws://localhost:5678"
-    )
-    parser.add_argument(
-        "--prompt", type=str, help="Prompt to send to server", required=True
-    )
-    parser.add_argument(
-        "--negative_prompt",
-        type=str,
-        help="Negative prompt to send to server",
-        default="low quality",
-    )
+    parser.add_argument("--url", type=str, help="URL of server", default="ws://localhost:5678")
+    parser.add_argument("--prompt", type=str, help="Prompt to send to server", required=True)
+    parser.add_argument("--negative_prompt", type=str, help="Negative prompt to send to server",
+                        default="low quality")
     parser.add_argument("--image_size", type=int, help="Image size", default=256)
-    parser.add_argument(
-        "--rotate", type=float, default=0, help="Rotate the image by specified degrees"
-    )
-    parser.add_argument(
-        "--fullscreen", action="store_true", help="Display window in fullscreen mode"
-    )
-    parser.add_argument(
-        "--jpeg_quality", type=int, default=90, help="JPEG compression quality (1-100)"
-    )
-    parser.add_argument(
-        "--target_fps", type=int, default=30, help="Target FPS for frame capture"
-    )
+    parser.add_argument("--rotate", type=float, default=0, help="Rotate the image by specified degrees")
+    parser.add_argument("--fullscreen", action="store_true", help="Display window in fullscreen mode")
+    parser.add_argument("--jpeg_quality", type=int, default=90, help="JPEG compression quality (1-100)")
+    parser.add_argument("--target_fps", type=int, default=30, help="Target FPS for frame capture")
     args = parser.parse_args()
 
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.run(
         capture_and_send(
-            args.url,
-            args.prompt,
-            args.negative_prompt,
-            args.image_size,
-            args.rotate,
-            args.fullscreen,
-            args.jpeg_quality,
-            args.target_fps,
+            url=args.url,
+            prompt=args.prompt,
+            negative_prompt=args.negative_prompt,
+            image_size=args.image_size,
+            rotate=args.rotate,
+            fullscreen=args.fullscreen,
+            jpeg_quality=args.jpeg_quality,
+            target_fps=args.target_fps
         )
     )
